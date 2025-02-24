@@ -1,9 +1,10 @@
-# .nixpacks.toml (ensure this exists in project root)
-[phases.setup]
-nixPkgs = ["python311", "python311Packages.pip"]
-
-[phases.install]
-cmds = ["pip install -r requirements.txt --no-cache-dir"]
-
 [phases.build]
-cmds = ["python -c 'import pandas; print(\"Pandas installed successfully\")'"]
+commands = [
+  "pip install --break-system-packages --upgrade pip",
+  "pip install --break-system-packages -r requirements.txt"
+]
+
+[phases.start]
+commands = [
+  "python app/app.py"
+]
