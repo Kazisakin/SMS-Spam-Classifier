@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+
+# macOS system files
+.DS_Store
+
+# Windows system files
+Thumbs.db
+
+# IDE and editor files
+*.swp
+*.swo
+*.sublime-*
+
+# Log files
+*.log
+
+# Environment variables
+.env
+
+# Large or runtime-generated files (persisted via Railway Volume)
+data/processed/*.gz
+model.pkl
+training_progress.json
+
+# Ignore notebooks if they’re not part of the deployment (optional, adjust based on need)
+notebooks/*.ipynb_checkpoints/
+notebooks/*.pyc
+notebooks/__pycache__/
+
+# Ignore specific files in data/raw/ if not needed in version control (ensure feedback.csv is tracked if required)
+# data/raw/spam_ham_dataset.csv
+# data/raw/SMSSpamCollection.csv
+# data/raw/spam.csv
+
+# Ensure feedback.csv and cumulative_feedback_count.json are NOT ignored (remove if listed)
+# These files should be tracked or persisted via Railway Volume for continuous learning
