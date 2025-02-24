@@ -382,4 +382,4 @@ def is_duplicate_feedback(message: str, include_history: bool = False) -> bool:
 if __name__ == '__main__':
     logger.info("Starting Flask server...")
     port = int(os.environ.get('PORT', 8080))  # Use 8080 as default for Railway
-    app.run(debug=False, host="0.0.0.0", port=port)
+    app.run(debug=False, host="0.0.0.0", port=8080)
