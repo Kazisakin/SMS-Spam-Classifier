@@ -1,0 +1,10 @@
+[phases.build]
+commands = [
+  "pip install --upgrade pip",
+  "pip install -r requirements.txt"
+]
+
+[phases.start]
+commands = [
+  "python app/app.py"
+]

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SMS Classifier</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet"> <!-- Modern, minimal font -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <!-- Navbar -->
+  <nav class="navbar navbar-expand-lg navbar-light bg-light">
+    <div class="container-fluid">
+      <a class="navbar-brand ms-3" href="#">SMS Classifier</a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse justify-content-end me-3" id="navbarNav">
+        <ul class="navbar-nav"></ul>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content (Centered, Spaced, and Modern) -->
+  <div class="main-content">
+    <div class="container py-4">
+      <div class="row justify-content-center">
+        <div class="col-12 col-md-10 col-lg-8">
+          <!-- Flash Messages -->
+          {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+              {% for category, message in messages %}
+                <div class="alert alert-{{ category }} alert-dismissible fade show mb-4" role="alert">
+                  {{ message }}
+                  <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+              {% endfor %}
+            {% endif %}
+          {% endwith %}
+
+          <!-- Demo SMS Samples -->
+          <div class="card modern-card mb-4">
+            <div class="card-header">Explore Example Messages:</div>
+            <div class="card-body">
+              <p class="text-muted mb-3">Click on an example below to quickly test the classifier.</p>
+              <div class="d-flex flex-column gap-3">
+                <button class="btn btn-outline-primary demo-btn w-100" data-text="Congratulations! You've won a $1000 gift card.">
+                  Spam: "Congratulations! You've won a $1000 gift card."
+                </button>
+                <button class="btn btn-outline-primary demo-btn w-100" data-text="Hey, are we still on for dinner tonight?">
+                  Ham: "Hey, are we still on for dinner tonight?"
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Classification Form -->
+          <div class="card modern-card mb-4">
+            <div class="card-header">Check SMS for Spam or Ham</div>
+            <div class="card-body">
+              <p class="text-muted mb-3">Enter your SMS message and click "Check Spam" to see the result.</p>
+              <form method="POST" action="/" novalidate>
+                <div class="mb-3">
+                  <label for="user_text" class="form-label">SMS Message:</label>
+                  <textarea id="user_text" name="user_text" rows="4" class="form-control" placeholder="Type your SMS text here..." required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Check Spam</button>
+              </form>
+              {% if prediction %}
+                <hr class="my-3">
+                <h5 class="mt-3 text-center">Prediction: 
+                  <span class="badge {{ 'bg-danger' if prediction == 'spam' else 'bg-success' }}">{{ prediction }}</span>
+                </h5>
+              {% endif %}
+            </div>
+          </div>
+
+          <!-- Feedback Form (Shown only if prediction exists) -->
+          {% if prediction %}
+            <div class="card modern-card mb-4">
+              <div class="card-header">Submit Feedback</div>
+              <div class="card-body">
+                <p class="text-muted mb-3">If the prediction is incorrect, select the correct label and submit feedback.</p>
+                <form method="POST" action="/feedback" novalidate>
+                  <input type="hidden" name="message" value="{{ request.form['user_text'] if request.form['user_text'] else '' }}">
+                  <div class="mb-3">
+                    <label class="form-label">Correct Label:</label>
+                    <div class="d-flex gap-3">
+                      <div class="form-check">
+                        <input class="form-check-input" type="radio" name="correct_label" id="spam" value="spam" required>
+                        <label class="form-check-label" for="spam">Spam</label>
+                      </div>
+                      <div class="form-check">
+                        <input class="form-check-input" type="radio" name="correct_label" id="ham" value="ham" required>
+                        <label class="form-check-label" for="ham">Ham</label>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="mb-3">
+                    <label for="captcha_response" class="form-label">{{ captcha_question }} (CAPTCHA):</label>
+                    <input type="text" class="form-control" name="captcha_response" id="captcha_response" placeholder="Enter answer" required>
+                  </div>
+                  <button type="submit" class="btn btn-secondary w-100">Submit Feedback</button>
+                </form>
+              </div>
+            </div>
+          {% endif %}
+
+          <!-- Training Progress and Feedback Queue -->
+          <div class="card modern-card mb-4">
+            <div class="card-header">Model Status</div>
+            <div class="card-body">
+              <p class="text-muted mb-3">
+                <span class="feedback-count" id="feedback-count">
+                  Feedback Queue: {{ training_status.feedback_count }} / 50 entries collected<br>
+                  Total Feedback: {{ training_status.total_feedback_count }}
+                </span>
+              </p>
+              {% if training_status.is_training %}
+                <div class="progress mb-3">
+                  <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: {{ training_status.progress }}%;" aria-valuenow="{{ training_status.progress }}" aria-valuemin="0" aria-valuemax="100">{{ training_status.progress }}%</div>
+                </div>
+                <p class="text-muted">Training in progress... Estimated time: {{ training_status.estimated_time }}</p>
+              {% else %}
+                <p class="text-muted">Model is idle. Retraining triggers at 50 feedback entries.</p>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container text-center">
+      <span class="text-muted">© 2025 SMS Classifier by Kazi Sakin.<br><small>Enhancing spam detection one message at a time!</small></span>
+    </div>
+  </footer>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- JavaScript for Demo Buttons and Feedback Count Refresh -->
+  <script>
+    // Demo button functionality
+    document.querySelectorAll('.demo-btn').forEach(button => {
+      button.addEventListener('click', function() {
+        const text = this.getAttribute('data-text');
+        document.getElementById('user_text').value = text;
+      });
+    });
+
+    // Periodically refresh feedback count to ensure UI updates
+    function updateFeedbackCount() {
+      const baseUrl = window.location.origin; // e.g., 'http://127.0.0.1:8080' or 'your-project-name.up.railway.app'
+      fetch(`${baseUrl}/feedback_count`, { 
+        method: 'GET', 
+        cache: 'no-cache',
+        credentials: 'include', // Include cookies for session handling
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          return response.json();
+        })
+        .then(data => {
+          console.log('Received feedback count data:', data); // Debug log
+          if (data.feedback_count !== undefined && data.total_feedback_count !== undefined) {
+            document.getElementById('feedback-count').textContent = `
+              Feedback Queue: ${data.feedback_count} / 50 entries collected
+              Total Feedback: ${data.total_feedback_count}
+            `;
+          } else {
+            console.warn('No feedback counts in response:', data);
+            // Fallback to server-side rendered values
+            const initialCurrent = parseInt('{{ training_status.feedback_count }}', 10) || 0;
+            const initialTotal = parseInt('{{ training_status.total_feedback_count }}', 10) || 0;
+            document.getElementById('feedback-count').textContent = `
+              Feedback Queue: ${initialCurrent} / 50 entries collected
+              Total Feedback: ${initialTotal}
+            `;
+          }
+        })
+        .catch(error => {
+          console.error('Error fetching feedback count:', error);
+          // Fallback to server-side rendered values on error
+          const initialCurrent = parseInt('{{ training_status.feedback_count }}', 10) || 0;
+          const initialTotal = parseInt('{{ training_status.total_feedback_count }}', 10) || 0;
+          document.getElementById('feedback-count').textContent = `
+            Feedback Queue: ${initialCurrent} / 50 entries collected
+            Total Feedback: ${initialTotal}
+          `;
+        });
+
+      // Display loading state
+      document.getElementById('feedback-count').classList.add('loading');
+      document.getElementById('feedback-count').textContent = 'Feedback Queue: Loading... / 50 entries collected | Total Feedback: Loading...';
+    }
+
+    // Update every 5 seconds, with initial update and error recovery
+    updateFeedbackCount(); // Initial update
+    setInterval(updateFeedbackCount, 5000);
+
+
+    // Remove loading state after update (if successful)
+    function removeLoadingState() {
+      document.getElementById('feedback-count').classList.remove('loading');
+    }
+    setTimeout(removeLoadingState, 5500); // Remove after 5.5 seconds to allow fetch completion
+  </script>
+</body>
+</html>
