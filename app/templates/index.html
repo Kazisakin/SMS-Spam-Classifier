@@ -173,8 +173,7 @@
           console.log('Received feedback count data:', data); // Debug log
           if (data.feedback_count !== undefined && data.total_feedback_count !== undefined) {
             document.getElementById('feedback-count').textContent = `
-              Feedback Queue: ${data.feedback_count} / 50 entries collected
-              Total Feedback: ${data.total_feedback_count}
+              Feedback Queue: ${data.feedback_count} 
             `;
           } else {
             console.warn('No feedback counts in response:', data);
@@ -182,8 +181,7 @@
             const initialCurrent = parseInt('{{ training_status.feedback_count }}', 10) || 0;
             const initialTotal = parseInt('{{ training_status.total_feedback_count }}', 10) || 0;
             document.getElementById('feedback-count').textContent = `
-              Feedback Queue: ${initialCurrent} / 50 entries collected
-              Total Feedback: ${initialTotal}
+              Feedback Queue: ${initialCurrent} 
             `;
           }
         })
@@ -193,14 +191,13 @@
           const initialCurrent = parseInt('{{ training_status.feedback_count }}', 10) || 0;
           const initialTotal = parseInt('{{ training_status.total_feedback_count }}', 10) || 0;
           document.getElementById('feedback-count').textContent = `
-            Feedback Queue: ${initialCurrent} / 50 entries collected
-            Total Feedback: ${initialTotal}
+            Feedback Queue: ${initialCurrent}
           `;
         });
 
       // Display loading state
       document.getElementById('feedback-count').classList.add('loading');
-      document.getElementById('feedback-count').textContent = 'Feedback Queue: Loading... / 50 entries collected | Total Feedback: Loading...';
+      document.getElementById('feedback-count').textContent = 'Feedback Queue: Loading... ';
     }
 
     // Update every 5 seconds, with initial update and error recovery
