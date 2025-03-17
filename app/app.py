@@ -12,12 +12,12 @@ import joblib
 import json
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'b8b723e8fac42ffc42ceca66f8f8d2eb')  # Secure key for production
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'b8b723e8fac42ffc42ceca66f8f8d2eb')  # Secure key from env or fallback
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # Logging Configuration
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Increased to DEBUG for detailed tracing
+logger.setLevel(logging.DEBUG)  # Detailed tracing
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -25,16 +25,15 @@ console_handler.setFormatter(formatter)
 if not logger.hasHandlers():
     logger.addHandler(console_handler)
 
-# Paths
+# Paths (relative and configurable for Railway/Docker)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-base_dir = r'G:\ml final files\SMS-Spam-Classifier'
-data_dir = os.path.join(base_dir, 'data')
-model_path = os.path.join(base_dir, 'model.pkl')
-
-# Explicit Feedback File Path
-FEEDBACK_FILE = r'G:\ml final files\SMS-Spam-Classifier\data\raw\feedback.csv'
-FALLBACK_FEEDBACK_FILE = os.path.join(current_dir, 'feedback_fallback.csv')  # Fallback if main path fails
-CUMULATIVE_FEEDBACK_FILE = os.path.join(data_dir, 'raw', 'cumulative_feedback_count.json')
+root_dir = os.path.dirname(current_dir)  # Project root (SMS-SPAM-CLASSIFIER/)
+data_dir = os.environ.get('DATA_DIR', os.path.join(current_dir, 'data'))  # Use volume or local fallback
+model_path = os.path.join(root_dir, 'model.pkl')  # Model in root directory
+FEEDBACK_FILE = os.path.join(data_dir, 'feedback.csv')
+FALLBACK_FEEDBACK_FILE = os.path.join(current_dir, 'feedback_fallback.csv')
+CUMULATIVE_FEEDBACK_FILE = os.path.join(data_dir, 'cumulative_feedback_count.json')
+HISTORY_FILE = os.path.join(data_dir, 'user_history.csv')
 
 # Load Model
 try:
@@ -45,7 +44,7 @@ except Exception as e:
     model = None
     logger.error("Could not load model from %s. Error: %s", model_path, e)
 
-# Training Status
+# Training Status (defined but not initialized yet)
 training_status = {
     'is_training': False,
     'progress': 0,
@@ -55,29 +54,7 @@ training_status = {
 }
 FEEDBACK_THRESHOLD = 50
 
-# Cumulative Feedback Count
-def load_cumulative_feedback_count() -> int:
-    try:
-        if os.path.exists(CUMULATIVE_FEEDBACK_FILE):
-            with open(CUMULATIVE_FEEDBACK_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('total_feedback_count', 0)
-        return 0
-    except Exception as e:
-        logger.error("Error loading cumulative feedback count: %s", e)
-        return 0
-
-def save_cumulative_feedback_count(count: int) -> None:
-    try:
-        os.makedirs(os.path.dirname(CUMULATIVE_FEEDBACK_FILE), exist_ok=True)
-        with open(CUMULATIVE_FEEDBACK_FILE, 'w') as f:
-            json.dump({'total_feedback_count': count}, f)
-    except Exception as e:
-        logger.error("Error saving cumulative feedback count: %s", e)
-
-training_status['total_feedback_count'] = load_cumulative_feedback_count()
-
-# Utility Functions
+# Utility Functions (defined before use)
 def get_feedback_count() -> int:
     try:
         if os.path.exists(FEEDBACK_FILE):
@@ -124,30 +101,60 @@ def is_duplicate_feedback(message: str) -> bool:
         return False
 
 def get_user_history():
-    history_file = os.path.join(data_dir, 'raw', 'user_history.csv')
     try:
-        if os.path.exists(history_file):
-            df = pd.read_csv(history_file)
+        if os.path.exists(HISTORY_FILE):
+            df = pd.read_csv(HISTORY_FILE)
             return df.tail(10).to_dict('records')
+        logger.debug(f"No user history file at {HISTORY_FILE}")
         return []
     except Exception as e:
         logger.error("Error reading user history: %s", e)
         return []
 
 def save_user_history(user_text, prediction, confidence):
-    history_file = os.path.join(data_dir, 'raw', 'user_history.csv')
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     entry = [user_text, prediction, confidence, timestamp]
-    file_exists = os.path.exists(history_file)
+    file_exists = os.path.exists(HISTORY_FILE)
     try:
-        os.makedirs(os.path.dirname(history_file), exist_ok=True)
-        with open(history_file, 'a', newline='', encoding='utf-8') as f:
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+        with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(['message', 'prediction', 'confidence', 'timestamp'])
             writer.writerow(entry)
+        logger.debug(f"Saved history entry to {HISTORY_FILE}: {entry}")
     except Exception as e:
         logger.error("Error saving user history: %s", e)
+
+def load_cumulative_feedback_count() -> int:
+    try:
+        if os.path.exists(CUMULATIVE_FEEDBACK_FILE):
+            with open(CUMULATIVE_FEEDBACK_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get('total_feedback_count', 0)
+        logger.debug(f"No cumulative feedback file at {CUMULATIVE_FEEDBACK_FILE}")
+        return 0
+    except Exception as e:
+        logger.error("Error loading cumulative feedback count: %s", e)
+        return 0
+
+def save_cumulative_feedback_count(count: int) -> None:
+    try:
+        os.makedirs(os.path.dirname(CUMULATIVE_FEEDBACK_FILE), exist_ok=True)
+        with open(CUMULATIVE_FEEDBACK_FILE, 'w') as f:
+            json.dump({'total_feedback_count': count}, f)
+        logger.debug(f"Saved cumulative feedback count: {count} to {CUMULATIVE_FEEDBACK_FILE}")
+    except Exception as e:
+        logger.error("Error saving cumulative feedback count: %s", e)
+
+def initialize_feedback_counts():
+    feedback_count = get_feedback_count()
+    total_count = load_cumulative_feedback_count()
+    if total_count < feedback_count:  # Sync if file is outdated
+        logger.debug(f"Syncing total feedback count to {feedback_count}")
+        save_cumulative_feedback_count(feedback_count)
+        total_count = feedback_count
+    return feedback_count, total_count
 
 def read_training_progress(progress_file: str) -> tuple[int, str]:
     try:
@@ -163,18 +170,22 @@ def read_training_progress(progress_file: str) -> tuple[int, str]:
 def retrain_model_async():
     global model, training_status
     training_status['is_training'] = True
-    progress_file = os.path.join(base_dir, 'training_progress.json')
-    feedback_backup = os.path.join(data_dir, 'raw', 'feedback_backup.csv')
+    progress_file = os.path.join(data_dir, 'training_progress.json')
+    feedback_backup = os.path.join(data_dir, 'feedback_backup.csv')
     try:
         if os.path.exists(FEEDBACK_FILE):
             df = pd.read_csv(FEEDBACK_FILE, names=['label', 'message', 'timestamp'], header=0 if 'label' in pd.read_csv(FEEDBACK_FILE, nrows=1).columns else None)
             df.to_csv(feedback_backup, index=False, header=False)
-            logger.info("Backed up feedback.csv to feedback_backup.csv")
+            logger.info("Backed up feedback.csv to %s", feedback_backup)
         
-        preprocess_script = os.path.join(base_dir, 'src', 'data_processing', 'preprocess.py')
-        subprocess.run(["python", preprocess_script], check=True, cwd=base_dir)
-        train_script = os.path.join(base_dir, 'src', 'model', 'train.py')
-        process = subprocess.Popen(["python", train_script], cwd=base_dir)
+        preprocess_script = os.path.join(root_dir, 'src', 'data_processing', 'preprocess.py')
+        train_script = os.path.join(root_dir, 'src', 'model', 'train.py')
+        
+        if not os.path.exists(preprocess_script) or not os.path.exists(train_script):
+            raise FileNotFoundError("Retraining scripts not found in deployment environment")
+        
+        subprocess.run(["python", preprocess_script], check=True, cwd=root_dir)
+        process = subprocess.Popen(["python", train_script], cwd=root_dir)
         start_time = time.time()
         while process.poll() is None:
             progress, est_time = read_training_progress(progress_file)
@@ -209,6 +220,9 @@ def retrain_model_async():
         if os.path.exists(progress_file):
             os.remove(progress_file)
 
+# Initialize training_status after all utility functions are defined
+training_status['feedback_count'], training_status['total_feedback_count'] = initialize_feedback_counts()
+
 # Routes
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -223,7 +237,6 @@ def index():
     captcha_question = f"What is {a} + {b}?"
     session['captcha_answer'] = str(a + b)
     training_status['feedback_count'] = get_feedback_count()
-    training_status['total_feedback_count'] = load_cumulative_feedback_count()
 
     if request.method == 'POST':
         user_text = request.form.get('user_text', '').strip()
@@ -284,7 +297,6 @@ def feedback():
         logger.warning("Duplicate feedback detected for message: %s", user_message)
         return redirect(url_for("index"))
     
-    # Try primary feedback file
     target_file = FEEDBACK_FILE
     try:
         os.makedirs(os.path.dirname(FEEDBACK_FILE), exist_ok=True)
@@ -300,7 +312,6 @@ def feedback():
             logger.debug("Wrote feedback to %s: %s, %s, %s", FEEDBACK_FILE, correct_label, user_message, timestamp)
     except Exception as e:
         logger.error("Failed to write to %s: %s", FEEDBACK_FILE, e)
-        # Fallback to local directory
         target_file = FALLBACK_FEEDBACK_FILE
         try:
             logger.debug(f"Falling back to write feedback to: {FALLBACK_FEEDBACK_FILE}")
@@ -314,7 +325,7 @@ def feedback():
                 logger.debug("Wrote feedback to %s: %s, %s, %s", FALLBACK_FEEDBACK_FILE, correct_label, user_message, timestamp)
         except Exception as e2:
             logger.error("Failed to write to fallback %s: %s", FALLBACK_FEEDBACK_FILE, e2)
-            flash("Error saving feedback to both primary and fallback locations. Please try again later.", "error")
+            flash("Error saving feedback to both primary and fallback locations.", "error")
             return redirect(url_for("index"))
     
     flash("Feedback submitted successfully!", "success")
@@ -345,7 +356,6 @@ def retrain():
 @app.route('/feedback_count', methods=['GET'])
 def feedback_count():
     training_status['feedback_count'] = get_feedback_count()
-    training_status['total_feedback_count'] = load_cumulative_feedback_count()
     return jsonify({
         'feedback_count': training_status['feedback_count'],
         'total_feedback_count': training_status['total_feedback_count'],
@@ -354,5 +364,5 @@ def feedback_count():
 
 if __name__ == '__main__':
     logger.info("Starting Flask server...")
-    port = int(os.environ.get('PORT', 8080))
-    app.run(debug=True, host="0.0.0.0", port=port)
+    port = int(os.environ.get('PORT', 8080))  # Railway sets PORT
+    app.run(debug=False, host="0.0.0.0", port=port)  # Debug off for production
