@@ -23,6 +23,11 @@
   <li><b>Cloud Platform Account</b>: For deployment (e.g., Railway, optional).</li>
 </ul>
 
+## Live Demo
+<div>
+  <p>Check out the live version of the app here: <a href="https://sms-spam-classifier-production-0e7e.up.railway.app/">https://sms-spam-classifier-production-0e7e.up.railway.app/</a>. Try classifying messages and submitting feedback to see it in action!</p>
+</div>
+
 ## Project Structure
 <p>The project is organized as follows:</p>
 <pre>
