@@ -7,67 +7,56 @@ from datetime import datetime
 import time
 import threading
 import pandas as pd
-from flask import Flask, request, render_template, redirect, url_for, flash, session, jsonify
+from flask import Flask, request, render_template, redirect, url_for, flash, session, send_file, jsonify
 import joblib
 import json
-from sklearn.metrics import accuracy_score, f1_score, classification_report
-from typing import Optional
 
 app = Flask(__name__)
-# Use environment variable for secret key, with fallback for local development
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'b8b723e8fac42ffc42ceca66f8f8d2eb')  # Use a secure key in production
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'b8b723e8fac42ffc42ceca66f8f8d2eb')  # Secure key for production
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
-# ---------------------------------------------------------------------
 # Logging Configuration
-# ---------------------------------------------------------------------
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)  # Increased to DEBUG for detailed tracing
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(formatter)
 if not logger.hasHandlers():
     logger.addHandler(console_handler)
 
-# ---------------------------------------------------------------------
-# Load Model (initially)
-# ---------------------------------------------------------------------
+# Paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
-base_dir = os.path.join(current_dir, '..')  # Ensure /app/ for Railway
-model_path = os.path.join(base_dir, 'model.pkl')
+base_dir = r'G:\ml final files\SMS-Spam-Classifier'
 data_dir = os.path.join(base_dir, 'data')
+model_path = os.path.join(base_dir, 'model.pkl')
 
+# Explicit Feedback File Path
+FEEDBACK_FILE = r'G:\ml final files\SMS-Spam-Classifier\data\raw\feedback.csv'
+FALLBACK_FEEDBACK_FILE = os.path.join(current_dir, 'feedback_fallback.csv')  # Fallback if main path fails
+CUMULATIVE_FEEDBACK_FILE = os.path.join(data_dir, 'raw', 'cumulative_feedback_count.json')
+
+# Load Model
 try:
-    os.makedirs(data_dir, exist_ok=True)  # Ensure data directory exists
+    os.makedirs(data_dir, exist_ok=True)
     model = joblib.load(model_path)
-    logger.info("Model loaded successfully from %s", model_path)
+    logger.info("Model loaded from %s", model_path)
 except Exception as e:
     model = None
-    logger.error("Could not load model from %s. Error: %s. Attempting to retrain if feedback exists...", model_path, e)
-    # Attempt to retrain if feedback exists and model fails to load
-    feedback_file = os.path.join(data_dir, 'raw', 'feedback.csv')
-    if os.path.exists(feedback_file) and pd.read_csv(feedback_file, header=None).shape[0] > 0:
-        logger.info("Initiating automatic retraining due to missing model...")
-        threading.Thread(target=retrain_model_async, daemon=True).start()
+    logger.error("Could not load model from %s. Error: %s", model_path, e)
 
-# ---------------------------------------------------------------------
-# Training Status Variables
-# ---------------------------------------------------------------------
+# Training Status
 training_status = {
     'is_training': False,
     'progress': 0,
     'estimated_time': "N/A",
-    'feedback_count': 0,  # Current queue count from feedback.csv
-    'total_feedback_count': 0  # Cumulative count across all time
+    'feedback_count': 0,
+    'total_feedback_count': 0
 }
+FEEDBACK_THRESHOLD = 50
 
-FEEDBACK_THRESHOLD = 50  # Trigger retraining after 50 feedback entries
-
-# Persistent file for cumulative feedback count
-CUMULATIVE_FEEDBACK_FILE = os.path.join(data_dir, 'raw', 'cumulative_feedback_count.json')
-
+# Cumulative Feedback Count
 def load_cumulative_feedback_count() -> int:
-    """Load the cumulative feedback count from a persistent file."""
     try:
         if os.path.exists(CUMULATIVE_FEEDBACK_FILE):
             with open(CUMULATIVE_FEEDBACK_FILE, 'r') as f:
@@ -79,307 +68,291 @@ def load_cumulative_feedback_count() -> int:
         return 0
 
 def save_cumulative_feedback_count(count: int) -> None:
-    """Save the cumulative feedback count to a persistent file."""
     try:
+        os.makedirs(os.path.dirname(CUMULATIVE_FEEDBACK_FILE), exist_ok=True)
         with open(CUMULATIVE_FEEDBACK_FILE, 'w') as f:
             json.dump({'total_feedback_count': count}, f)
-        logger.debug(f"Saved cumulative feedback count: {count}")
     except Exception as e:
         logger.error("Error saving cumulative feedback count: %s", e)
 
-# Initialize cumulative count on app startup
 training_status['total_feedback_count'] = load_cumulative_feedback_count()
 
-# ---------------------------------------------------------------------
 # Utility Functions
-# ---------------------------------------------------------------------
 def get_feedback_count() -> int:
-    """Count the number of unique entries in feedback.csv, ignoring duplicates by message."""
-    feedback_file = os.path.join(data_dir, 'raw', 'feedback.csv')
     try:
-        if os.path.exists(feedback_file):
-            df = pd.read_csv(feedback_file, header=None, names=['label', 'message', 'timestamp'], dtype={'message': str, 'label': str})
-            # Ensure message and label columns are strings, handle NaN or None
-            df['message'] = df['message'].fillna('').astype(str).str.strip()
-            df['label'] = df['label'].fillna('ham').astype(str).str.strip()  # Default to 'ham' for invalid labels
-            # Deduplicate by message to prevent counting duplicates
+        if os.path.exists(FEEDBACK_FILE):
+            df = pd.read_csv(FEEDBACK_FILE, names=['label', 'message', 'timestamp'], header=0 if 'label' in pd.read_csv(FEEDBACK_FILE, nrows=1).columns else None)
             unique_count = len(df.drop_duplicates(subset=['message']))
-            logger.debug(f"Feedback count calculated: {unique_count} unique entries from {feedback_file}")
+            logger.debug(f"Feedback count: {unique_count} unique entries in {FEEDBACK_FILE}")
             return unique_count
+        logger.debug(f"No feedback file at {FEEDBACK_FILE}")
         return 0
     except Exception as e:
         logger.error("Error counting feedback: %s", e)
         return 0
 
-def is_duplicate_feedback(message: str) -> bool:
-    """Check if the message is already in feedback.csv to prevent duplicates."""
-    feedback_file = os.path.join(data_dir, 'raw', 'feedback.csv')
+def get_feedback_stats():
     try:
-        if os.path.exists(feedback_file):
-            df = pd.read_csv(feedback_file, header=None, names=['label', 'message', 'timestamp'], dtype={'message': str, 'label': str})
-            # Ensure message column is strings, handle NaN or None
+        if os.path.exists(FEEDBACK_FILE):
+            df = pd.read_csv(FEEDBACK_FILE, names=['label', 'message', 'timestamp'], header=0 if 'label' in pd.read_csv(FEEDBACK_FILE, nrows=1).columns else None)
+            df = df.dropna(how='all')
+            total = len(df)
+            if total == 0:
+                return {'spam_percent': 0, 'ham_percent': 0}
+            spam_count = len(df[df['label'] == 'spam'])
+            ham_count = len(df[df['label'] == 'ham'])
+            return {
+                'spam_percent': round((spam_count / total) * 100, 2) if total > 0 else 0,
+                'ham_percent': round((ham_count / total) * 100, 2) if total > 0 else 0
+            }
+        return {'spam_percent': 0, 'ham_percent': 0}
+    except Exception as e:
+        logger.error("Error calculating feedback stats: %s", e)
+        return {'spam_percent': 0, 'ham_percent': 0}
+
+def is_duplicate_feedback(message: str) -> bool:
+    try:
+        if os.path.exists(FEEDBACK_FILE):
+            df = pd.read_csv(FEEDBACK_FILE, names=['label', 'message', 'timestamp'], header=0 if 'label' in pd.read_csv(FEEDBACK_FILE, nrows=1).columns else None)
             df['message'] = df['message'].fillna('').astype(str).str.strip()
-            df['label'] = df['label'].fillna('ham').astype(str).str.strip()
-            return df['message'].eq(message.strip()).any()
+            is_duplicate = message.strip() in df['message'].values
+            logger.debug(f"Checking duplicate: '{message}' -> {is_duplicate}")
+            return is_duplicate
         return False
     except Exception as e:
-        logger.error("Error checking for duplicate feedback: %s", e)
-        return False  # Default to False to allow submission if check fails
+        logger.error("Error checking duplicate feedback: %s", e)
+        return False
 
-def read_training_progress(progress_file: str) -> tuple[int, str, str]:
-    """Read progress from training_progress.json."""
+def get_user_history():
+    history_file = os.path.join(data_dir, 'raw', 'user_history.csv')
+    try:
+        if os.path.exists(history_file):
+            df = pd.read_csv(history_file)
+            return df.tail(10).to_dict('records')
+        return []
+    except Exception as e:
+        logger.error("Error reading user history: %s", e)
+        return []
+
+def save_user_history(user_text, prediction, confidence):
+    history_file = os.path.join(data_dir, 'raw', 'user_history.csv')
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = [user_text, prediction, confidence, timestamp]
+    file_exists = os.path.exists(history_file)
+    try:
+        os.makedirs(os.path.dirname(history_file), exist_ok=True)
+        with open(history_file, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(['message', 'prediction', 'confidence', 'timestamp'])
+            writer.writerow(entry)
+    except Exception as e:
+        logger.error("Error saving user history: %s", e)
+
+def read_training_progress(progress_file: str) -> tuple[int, str]:
     try:
         if os.path.exists(progress_file):
             with open(progress_file, 'r') as f:
                 data = json.load(f)
-                return data.get('progress', 0), data.get('estimated_time', "N/A"), data.get('status', "running")
-        return 0, "N/A", "idle"
+                return data.get('progress', 0), data.get('estimated_time', "N/A")
+        return 0, "N/A"
     except Exception as e:
         logger.error("Error reading training progress: %s", e)
-        return 0, "N/A", "idle"
+        return 0, "N/A"
 
 def retrain_model_async():
-    """Run retraining in a background thread with progress updates from train.py, preserving feedback.csv."""
     global model, training_status
     training_status['is_training'] = True
     progress_file = os.path.join(base_dir, 'training_progress.json')
-    feedback_file = os.path.join(data_dir, 'raw', 'feedback.csv')
     feedback_backup = os.path.join(data_dir, 'raw', 'feedback_backup.csv')
-    
     try:
-        # Backup feedback.csv before preprocessing to preserve it
-        if os.path.exists(feedback_file):
-            df = pd.read_csv(feedback_file, header=None, names=['label', 'message', 'timestamp'], dtype={'message': str, 'label': str})
+        if os.path.exists(FEEDBACK_FILE):
+            df = pd.read_csv(FEEDBACK_FILE, names=['label', 'message', 'timestamp'], header=0 if 'label' in pd.read_csv(FEEDBACK_FILE, nrows=1).columns else None)
             df.to_csv(feedback_backup, index=False, header=False)
             logger.info("Backed up feedback.csv to feedback_backup.csv")
-
-        # Ensure data directory and subdirectories exist
-        raw_dir = os.path.join(data_dir, 'raw')
-        processed_dir = os.path.join(data_dir, 'processed')
-        os.makedirs(raw_dir, exist_ok=True)
-        os.makedirs(processed_dir, exist_ok=True)
         
-        # Run preprocessing with absolute paths
         preprocess_script = os.path.join(base_dir, 'src', 'data_processing', 'preprocess.py')
-        subprocess.run(["python", preprocess_script], check=True, cwd=base_dir, env=os.environ.copy())
-        
-        # Run training script and monitor progress
+        subprocess.run(["python", preprocess_script], check=True, cwd=base_dir)
         train_script = os.path.join(base_dir, 'src', 'model', 'train.py')
-        process = subprocess.Popen(["python", train_script], cwd=base_dir, env=os.environ.copy())
-        
-        # Poll progress file while training runs
+        process = subprocess.Popen(["python", train_script], cwd=base_dir)
+        start_time = time.time()
         while process.poll() is None:
-            progress, est_time, status = read_training_progress(progress_file)
+            progress, est_time = read_training_progress(progress_file)
+            if progress == 0 and est_time == "N/A":
+                elapsed = time.time() - start_time
+                progress = min(90, int(elapsed / 10 * 100))
+                est_time = f"{max(0, 10 - int(elapsed))}s"
             training_status['progress'] = progress
             training_status['estimated_time'] = est_time
-            time.sleep(1)  # Check every second
-        
+            time.sleep(1)
         if process.returncode == 0:
             model = joblib.load(model_path)
             logger.info("Retraining completed successfully")
             flash("Model retraining completed successfully!", "success")
-            # Restore feedback.csv after retraining to preserve submissions
             if os.path.exists(feedback_backup):
-                df_backup = pd.read_csv(feedback_backup, header=None, names=['label', 'message', 'timestamp'], dtype={'message': str, 'label': str})
-                df_backup.to_csv(feedback_file, index=False, header=False)
+                df_backup = pd.read_csv(feedback_backup, names=['label', 'message', 'timestamp'], header=0)
+                df_backup.to_csv(FEEDBACK_FILE, index=False, header=False)
                 os.remove(feedback_backup)
-                logger.info("Restored feedback.csv from backup after retraining")
         else:
             raise Exception(f"Training script failed with return code {process.returncode}")
     except Exception as e:
         logger.error("Retraining failed: %s", e)
         flash(f"Retraining failed: {e}", "error")
-        # Restore feedback.csv if retraining fails
         if os.path.exists(feedback_backup):
-            df_backup = pd.read_csv(feedback_backup, header=None, names=['label', 'message', 'timestamp'], dtype={'message': str, 'label': str})
-            df_backup.to_csv(feedback_file, index=False, header=False)
+            df_backup = pd.read_csv(feedback_backup, names=['label', 'message', 'timestamp'], header=0)
+            df_backup.to_csv(FEEDBACK_FILE, index=False, header=False)
             os.remove(feedback_backup)
-            logger.info("Restored feedback.csv from backup after retraining failure")
     finally:
         training_status['is_training'] = False
         training_status['progress'] = 0
         training_status['estimated_time'] = "N/A"
         if os.path.exists(progress_file):
-            os.remove(progress_file)  # Clean up progress file
+            os.remove(progress_file)
 
-# ---------------------------------------------------------------------
-# HOME ROUTE
-# ---------------------------------------------------------------------
+# Routes
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    """
-    Main route for checking spam vs. ham.
-    Updates feedback count and triggers retraining if threshold is met.
-    """
     prediction = None
+    confidence = None
+    explanation = None
     create_message = None
-
-    # Generate CAPTCHA
-    a = random.randint(1, 10)
-    b = random.randint(1, 10)
+    threshold = session.get('threshold', 0.5)
+    feedback_stats = get_feedback_stats()
+    user_history = get_user_history()
+    a, b = random.randint(1, 10), random.randint(1, 10)
     captcha_question = f"What is {a} + {b}?"
     session['captcha_answer'] = str(a + b)
-
-    # Update feedback counts immediately
     training_status['feedback_count'] = get_feedback_count()
     training_status['total_feedback_count'] = load_cumulative_feedback_count()
-    logger.debug(f"Initial feedback count for rendering: Current={training_status['feedback_count']}, Total={training_status['total_feedback_count']}")
 
     if request.method == 'POST':
         user_text = request.form.get('user_text', '').strip()
-        if user_text and model is not None:
-            prediction = model.predict([user_text])[0]
+        threshold = float(request.form.get('threshold', 0.5))
+        session['threshold'] = threshold
+        if user_text and model:
+            probabilities = model.predict_proba([user_text])[0]
+            confidence = round(max(probabilities) * 100, 2)
+            prediction = 'spam' if probabilities[1] > threshold else 'ham'
+            keywords = ['win', 'free', 'prize']
+            explanation = "High spam probability due to keywords: " + ", ".join([kw for kw in keywords if kw in user_text.lower()]) if any(kw in user_text.lower() for kw in keywords) else "No strong spam indicators."
+            save_user_history(user_text, prediction, confidence)
             create_message = "Your message has been processed."
-            logger.info("Message: '%s' => Prediction: %s", user_text, prediction)
+            logger.info("Message: '%s' => Prediction: %s, Confidence: %.2f%%, Threshold: %.2f", user_text, prediction, confidence, threshold)
         else:
-            create_message = "Please enter some text to check or ensure the model is loaded."
+            create_message = "Please enter some text to check or model not loaded."
             logger.warning("Empty text submitted or model not loaded.")
-            flash(create_message, "warning")
 
-    # Check if retraining should be triggered
     if not training_status['is_training'] and training_status['feedback_count'] >= FEEDBACK_THRESHOLD:
         threading.Thread(target=retrain_model_async, daemon=True).start()
         training_status['estimated_time'] = "Calculating..."
-        logger.info("Retraining triggered due to feedback threshold reached")
 
     return render_template(
         'index.html',
         prediction=prediction,
+        confidence=confidence,
+        explanation=explanation,
         create_message=create_message,
         captcha_question=captcha_question,
-        training_status=training_status
+        training_status=training_status,
+        feedback_stats=feedback_stats,
+        user_history=user_history,
+        threshold=threshold,
+        FEEDBACK_THRESHOLD=FEEDBACK_THRESHOLD
     )
 
-# ---------------------------------------------------------------------
-# FEEDBACK ROUTE
-# ---------------------------------------------------------------------
 @app.route('/feedback', methods=['POST'])
 def feedback():
-    """Handle user feedback and save to feedback.csv, preventing duplicates and updating counts."""
     user_message = request.form.get("message", "").strip()
     correct_label = request.form.get("correct_label", "").strip()
     captcha_response = request.form.get("captcha_response", "").strip()
-
+    
+    logger.debug("Feedback route called with: message='%s', label='%s', captcha='%s'", user_message, correct_label, captcha_response)
+    
     if not user_message:
         flash("Feedback submission failed: Message text cannot be empty.", "error")
         logger.error("Feedback submission failed: Empty message.")
         return redirect(url_for("index"))
-
+    
     expected_captcha = session.get('captcha_answer', "")
-    if not expected_captcha or captcha_response != expected_captcha:
+    if captcha_response != expected_captcha:
         flash("Incorrect CAPTCHA. Please try again.", "error")
         logger.warning("Incorrect CAPTCHA. Expected %s, got %s", expected_captcha, captcha_response)
         return redirect(url_for("index"))
-
-    # Check for duplicate feedback
+    
     if is_duplicate_feedback(user_message):
         flash("This feedback has already been submitted.", "warning")
         logger.warning("Duplicate feedback detected for message: %s", user_message)
         return redirect(url_for("index"))
-
-    feedback_file = os.path.join(data_dir, 'raw', 'feedback.csv')
-    os.makedirs(os.path.dirname(feedback_file), exist_ok=True)
-
-    # Ensure file exists with proper header if new
-    if not os.path.exists(feedback_file):
-        with open(feedback_file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["label", "message", "timestamp"])
-
-    # Append feedback to CSV
+    
+    # Try primary feedback file
+    target_file = FEEDBACK_FILE
     try:
+        os.makedirs(os.path.dirname(FEEDBACK_FILE), exist_ok=True)
+        logger.debug(f"Attempting to write feedback to: {FEEDBACK_FILE}")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(feedback_file, "a", newline="", encoding="utf-8", errors='replace') as f:
+        file_exists = os.path.exists(FEEDBACK_FILE)
+        with open(FEEDBACK_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["label", "message", "timestamp"])
+                logger.debug("Created new feedback.csv with headers at %s", FEEDBACK_FILE)
             writer.writerow([correct_label, user_message, timestamp])
-        flash("Feedback submitted successfully!", "success")
-        logger.info("Feedback added -> Label: %s, Message: %s, Timestamp: %s", correct_label, user_message, timestamp)
-        # Update feedback counts after submission
-        training_status['feedback_count'] = get_feedback_count()
-        current_cumulative = load_cumulative_feedback_count()
-        if not is_duplicate_feedback(user_message, include_history=True):  # Custom check for history
-            training_status['total_feedback_count'] = current_cumulative + 1
-            save_cumulative_feedback_count(training_status['total_feedback_count'])
-        logger.debug(f"Updated feedback counts: Current={training_status['feedback_count']}, Total={training_status['total_feedback_count']}")
+            logger.debug("Wrote feedback to %s: %s, %s, %s", FEEDBACK_FILE, correct_label, user_message, timestamp)
     except Exception as e:
-        flash("Error saving feedback. Please try again later.", "error")
-        logger.error("Error saving feedback: %s", e)
-
+        logger.error("Failed to write to %s: %s", FEEDBACK_FILE, e)
+        # Fallback to local directory
+        target_file = FALLBACK_FEEDBACK_FILE
+        try:
+            logger.debug(f"Falling back to write feedback to: {FALLBACK_FEEDBACK_FILE}")
+            file_exists = os.path.exists(FALLBACK_FEEDBACK_FILE)
+            with open(FALLBACK_FEEDBACK_FILE, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(["label", "message", "timestamp"])
+                    logger.debug("Created new feedback_fallback.csv with headers at %s", FALLBACK_FEEDBACK_FILE)
+                writer.writerow([correct_label, user_message, timestamp])
+                logger.debug("Wrote feedback to %s: %s, %s, %s", FALLBACK_FEEDBACK_FILE, correct_label, user_message, timestamp)
+        except Exception as e2:
+            logger.error("Failed to write to fallback %s: %s", FALLBACK_FEEDBACK_FILE, e2)
+            flash("Error saving feedback to both primary and fallback locations. Please try again later.", "error")
+            return redirect(url_for("index"))
+    
+    flash("Feedback submitted successfully!", "success")
+    logger.info("Feedback added -> Label: %s, Message: %s, Timestamp: %s to %s", correct_label, user_message, timestamp, target_file)
+    training_status['feedback_count'] = get_feedback_count()
+    training_status['total_feedback_count'] += 1
+    save_cumulative_feedback_count(training_status['total_feedback_count'])
     return redirect(url_for("index"))
 
-# ---------------------------------------------------------------------
-# FEEDBACK COUNT ROUTE (for AJAX updates)
-# ---------------------------------------------------------------------
+@app.route('/export_feedback')
+def export_feedback():
+    if os.path.exists(FEEDBACK_FILE):
+        return send_file(FEEDBACK_FILE, as_attachment=True, download_name=f"feedback_{datetime.now().strftime('%Y-%m-%d')}.csv")
+    elif os.path.exists(FALLBACK_FEEDBACK_FILE):
+        return send_file(FALLBACK_FEEDBACK_FILE, as_attachment=True, download_name=f"feedback_fallback_{datetime.now().strftime('%Y-%m-%d')}.csv")
+    flash("No feedback data available to export.", "warning")
+    return redirect(url_for("index"))
+
+@app.route('/retrain', methods=['GET'])
+def retrain():
+    if not training_status['is_training']:
+        threading.Thread(target=retrain_model_async, daemon=True).start()
+        flash("Manual retraining triggered!", "success")
+    else:
+        flash("Retraining is already in progress.", "warning")
+    return redirect(url_for("index"))
+
 @app.route('/feedback_count', methods=['GET'])
 def feedback_count():
-    """Return the current feedback counts as JSON for UI updates."""
     training_status['feedback_count'] = get_feedback_count()
     training_status['total_feedback_count'] = load_cumulative_feedback_count()
-    logger.debug(f"Returning feedback counts: Current={training_status['feedback_count']}, Total={training_status['total_feedback_count']}")
     return jsonify({
         'feedback_count': training_status['feedback_count'],
         'total_feedback_count': training_status['total_feedback_count'],
         'status': 'success'
-    }), 200, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',  # Allow cross-origin requests for Railway
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Accept'
-    }
+    }), 200
 
-# ---------------------------------------------------------------------
-# OPTIONS Route for CORS Preflight (Optional, for stricter CORS handling)
-# ---------------------------------------------------------------------
-@app.route('/feedback_count', methods=['OPTIONS'])
-def feedback_count_options():
-    """Handle CORS preflight requests for /feedback_count."""
-    return jsonify({}), 200, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Accept'
-    }
-
-# ---------------------------------------------------------------------
-# RETRAIN ROUTE (Manual Trigger)
-# ---------------------------------------------------------------------
-@app.route('/retrain', methods=['GET'])
-def retrain():
-    """Manual retraining route for testing or admin use."""
-    if not training_status['is_training']:
-        threading.Thread(target=retrain_model_async, daemon=True).start()
-        flash("Manual retraining triggered!", "success")
-        logger.info("Manual retraining initiated")
-    else:
-        flash("Retraining is already in progress.", "warning")
-        logger.warning("Retraining already in progress")
-    return redirect(url_for("index"))
-
-# Modified is_duplicate_feedback to include historical check
-def is_duplicate_feedback(message: str, include_history: bool = False) -> bool:
-    """Check if the message is already in feedback.csv or historical backup, optionally."""
-    feedback_file = os.path.join(data_dir, 'raw', 'feedback.csv')
-    feedback_backup = os.path.join(data_dir, 'raw', 'feedback_backup.csv')
-    try:
-        is_duplicate = False
-        if os.path.exists(feedback_file):
-            df = pd.read_csv(feedback_file, header=None, names=['label', 'message', 'timestamp'], dtype={'message': str, 'label': str})
-            df['message'] = df['message'].fillna('').astype(str).str.strip()
-            df['label'] = df['label'].fillna('ham').astype(str).str.strip()
-            is_duplicate |= df['message'].eq(message.strip()).any()
-        if include_history and os.path.exists(feedback_backup):
-            df_backup = pd.read_csv(feedback_backup, header=None, names=['label', 'message', 'timestamp'], dtype={'message': str, 'label': str})
-            df_backup['message'] = df_backup['message'].fillna('').astype(str).str.strip()
-            df_backup['label'] = df_backup['label'].fillna('ham').astype(str).str.strip()
-            is_duplicate |= df_backup['message'].eq(message.strip()).any()
-        return is_duplicate
-    except Exception as e:
-        logger.error("Error checking for duplicate feedback: %s", e)
-        return False  # Default to False to allow submission if check fails
-
-# ---------------------------------------------------------------------
-# Run the Flask App
-# ---------------------------------------------------------------------
 if __name__ == '__main__':
     logger.info("Starting Flask server...")
-    port = int(os.environ.get('PORT', 8080))  # Use 8080 as default for Railway
-    app.run(debug=False, host="0.0.0.0", port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(debug=True, host="0.0.0.0", port=port)
